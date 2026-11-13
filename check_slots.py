@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Check the Algerian Consulate (Montreal) booking page for open
-"Passeport Biométrique et Carte Nationale d'Identité" appointments and
-email an alert when new ones appear.
+"""Check the Algerian Consulate (Montreal) booking page for open appointments
+in every service except VISA (e.g. "Passeport Biométrique _ SAMEDI" and
+"Passeport Biométrique et Carte Nationale d'Identité") and email an alert
+when new ones appear.
 
 Settings come from environment variables:
   SMTP_USER   Gmail address that sends the alert
   SMTP_PASS   Gmail *app password* for that address
   EMAIL_TO    recipients, comma-separated (e.g. "a@x.com,b@y.com")
-  SERVICE_MATCH  optional, comma-separated words a service title must contain
-                 (default: "carte nationale")
+  SERVICE_MATCH    optional, comma-separated words a service title must contain
+                   (default: empty = every service)
+  SERVICE_EXCLUDE  optional, comma-separated words; services whose title contains
+                   any of them are skipped (default: "visa")
   STATE_FILE  optional, where already-notified slots are remembered
   DRY_RUN=1   print instead of sending email
 """
@@ -101,6 +104,10 @@ def send_email(subject, body):
         s.send_message(msg)
 
 
+def word_list(name, default):
+    return [w.strip().lower() for w in os.environ.get(name, default).split(",") if w.strip()]
+
+
 def main():
     if os.environ.get("TEST_EMAIL") == "true":
         send_email("✅ Test – alerte RDV Consulat Montréal",
@@ -108,11 +115,17 @@ def main():
                    "This is a test. Your appointment alerts are working!\n\n"
                    f"Page de réservation: {BOOKING_PAGE}\n")
         print("Test email sent to:", os.environ["EMAIL_TO"].count(",") + 1, "address(es)")
-    words = [w.strip().lower() for w in os.environ.get("SERVICE_MATCH", "carte nationale").split(",")]
+    include = word_list("SERVICE_MATCH", "")
+    exclude = word_list("SERVICE_EXCLUDE", "visa")
     services = post("services", {"queryOptions": {}})["service"]
-    wanted = [s for s in services if all(w in s["title"].lower() for w in words)]
+    wanted = [s for s in services
+              if not s.get("isHiddenFromCustomers")
+              and all(w in s["title"].lower() for w in include)
+              and not any(w in s["title"].lower() for w in exclude)]
     if not wanted:
-        sys.exit(f"No service matches {words}. Services: {[s['title'] for s in services]}")
+        sys.exit(f"No service matches include={include} exclude={exclude}. "
+                 f"Services: {[s['title'] for s in services]}")
+    print("Watching:", ", ".join(s["title"] for s in wanted))
 
     state_file = os.environ.get("STATE_FILE", "state.json")
     try:
