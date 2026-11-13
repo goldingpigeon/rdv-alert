@@ -102,6 +102,12 @@ def send_email(subject, body):
 
 
 def main():
+    if os.environ.get("TEST_EMAIL") == "true":
+        send_email("✅ Test – alerte RDV Consulat Montréal",
+                   "Ceci est un test. Les alertes fonctionnent !\n"
+                   "This is a test. Your appointment alerts are working!\n\n"
+                   f"Page de réservation: {BOOKING_PAGE}\n")
+        print("Test email sent to:", os.environ["EMAIL_TO"].count(",") + 1, "address(es)")
     words = [w.strip().lower() for w in os.environ.get("SERVICE_MATCH", "carte nationale").split(",")]
     services = post("services", {"queryOptions": {}})["service"]
     wanted = [s for s in services if all(w in s["title"].lower() for w in words)]
