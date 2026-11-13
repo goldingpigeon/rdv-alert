@@ -14,6 +14,8 @@ Settings come from environment variables:
                    any of them are skipped (default: "visa")
   STATE_FILE  optional, where already-notified slots are remembered
   DRY_RUN=1   print instead of sending email
+  SIMULATE=true  send an alert with fake slots for the watched services
+                 (tests the whole alert email; real state is not touched)
 """
 import json, os, smtplib, sys, urllib.request
 from datetime import datetime, timedelta, date
@@ -104,6 +106,17 @@ def send_email(subject, body):
         s.send_message(msg)
 
 
+def fake_slots():
+    """A few made-up upcoming weekday slots, for SIMULATE runs."""
+    day = datetime.now(TZ).replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=3)
+    out = []
+    while len(out) < 4:
+        if day.weekday() < 5:
+            out += [day, day + timedelta(minutes=30)]
+        day += timedelta(days=1)
+    return out
+
+
 def word_list(name, default):
     return [w.strip().lower() for w in os.environ.get(name, default).split(",") if w.strip()]
 
@@ -127,15 +140,18 @@ def main():
                  f"Services: {[s['title'] for s in services]}")
     print("Watching:", ", ".join(s["title"] for s in wanted))
 
+    simulate = os.environ.get("SIMULATE") == "true"
     state_file = os.environ.get("STATE_FILE", "state.json")
     try:
-        seen = set(json.load(open(state_file)))
+        seen = set() if simulate else set(json.load(open(state_file)))
     except Exception:
         seen = set()
+    if simulate:
+        print("SIMULATION: using fake slots, no real availability is checked.")
 
     lines, now_open = [], set()
     for svc in wanted:
-        slots = open_slots(svc)
+        slots = fake_slots() if simulate else open_slots(svc)
         title = svc["title"].lstrip("🟩🟦🟠 ").strip()
         print(f"{title}: {len(slots)} open slot(s)")
         keys = {f"{svc['serviceId']}|{t.isoformat()}" for t in slots}
@@ -152,11 +168,17 @@ def main():
                 + f"\nPage de réservation: {BOOKING_PAGE}\n"
                   "Heures: heure de Montréal (Eastern Time). Faites vite, ils partent rapidement.\n")
         subject = "🟢 RDV disponible – Passeport / Carte d'identité (Consulat Montréal)"
+        if simulate:
+            subject = "🧪 SIMULATION – " + subject
+            body = ("*** SIMULATION / TEST – ces créneaux sont FICTIFS / these slots are FAKE ***\n\n"
+                    + body)
         if os.environ.get("DRY_RUN"):
             print(subject + "\n" + body)
         else:
             send_email(subject, body)
             print("Email sent.")
+    if simulate:
+        return  # never save fake slots
     # Remember only slots that are still open, so a slot that frees up again re-alerts.
     json.dump(sorted(now_open), open(state_file, "w"))
 

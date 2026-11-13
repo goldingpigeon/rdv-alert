@@ -9,6 +9,14 @@ on:
         description: "Send a test email to both addresses"
         type: boolean
         default: false
+      simulate:
+        description: "SIMULATION: send an alert email with FAKE passport slots"
+        type: boolean
+        default: false
+      include_visa:
+        description: "TEST: also watch VISA (it usually has real slots, so you get a real alert)"
+        type: boolean
+        default: false
 
 concurrency:
   group: check-slots
@@ -30,8 +38,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: state.json
-          key: slot-state-${{ github.run_id }}
-          restore-keys: slot-state-
+          key: ${{ inputs.include_visa && 'visatest' || 'slot' }}-state-${{ github.run_id }}
+          restore-keys: ${{ inputs.include_visa && 'visatest' || 'slot' }}-state-
 
       - name: Check for open slots
         env:
@@ -39,6 +47,8 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
           TEST_EMAIL: ${{ inputs.test_email }}
+          SIMULATE: ${{ inputs.simulate && 'true' || 'false' }}
+          SERVICE_EXCLUDE: ${{ inputs.include_visa && 'none' || 'visa' }}
         run: python check_slots.py
 
       - name: Save memory of notified slots
@@ -46,4 +56,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: state.json
-          key: slot-state-${{ github.run_id }}
+          key: ${{ inputs.include_visa && 'visatest' || 'slot' }}-state-${{ github.run_id }}
