@@ -1,0 +1,43 @@
+name: Check consulate appointments
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes (GitHub may delay runs a little)
+  workflow_dispatch:        # lets you run it by hand from the Actions tab
+
+concurrency:
+  group: check-slots
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Remembers which slots were already emailed, so you don't get spammed
+      - name: Restore memory of notified slots
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: slot-state-${{ github.run_id }}
+          restore-keys: slot-state-
+
+      - name: Check for open slots
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python check_slots.py
+
+      - name: Save memory of notified slots
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: slot-state-${{ github.run_id }}
