@@ -1,12 +1,20 @@
 name: Check consulate appointments
 
+# How it works:
+# - A "monitor" run checks every minute for about 5h40m, then starts the next
+#   monitor run itself, so checking never stops.
+# - The schedule below is only a backup that restarts the chain if it breaks.
+# - Manual runs with a test box ticked run once and finish in seconds.
+# - Run workflow with NO box ticked = start the monitor right now.
+# - To stop the monitor: cancel the running run (it won't start a new one).
+
 on:
   schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes (GitHub may delay runs a little)
-  workflow_dispatch:        # lets you run it by hand from the Actions tab
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
     inputs:
       test_email:
-        description: "Send a test email to both addresses"
+        description: "Send a test email to everyone"
         type: boolean
         default: false
       simulate:
@@ -18,14 +26,28 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+  actions: write   # lets a monitor run start the next one
+
 concurrency:
-  group: check-slots
+  # Test runs get their own group so they never wait behind the monitor.
+  group: ${{ (inputs.test_email || inputs.simulate || inputs.include_visa) && 'check-test' || 'check-slots' }}
   cancel-in-progress: false
+
+env:
+  # Only alert for appointments in this window (inclusive). Change them in
+  # Settings -> Secrets and variables -> Actions -> Variables (DATE_FROM / DATE_TO,
+  # format YYYY-MM-DD). Without those variables, the defaults below are used.
+  DATE_FROM: ${{ vars.DATE_FROM || '2026-11-15' }}
+  DATE_TO: ${{ vars.DATE_TO || '2026-12-10' }}
+  CHECK_EVERY_SECONDS: "60"
+  MONITOR_MINUTES: "340"
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +55,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Remembers which slots were already emailed, so you don't get spammed
+      - name: Decide mode
+        id: mode
+        run: |
+          if [ "${{ inputs.test_email || inputs.simulate || inputs.include_visa }}" = "true" ]; then
+            echo "monitor=false" >> "$GITHUB_OUTPUT"; echo "Mode: one-time test run"
+          else
+            echo "monitor=true" >> "$GITHUB_OUTPUT"; echo "Mode: monitor (every ${CHECK_EVERY_SECONDS}s for ${MONITOR_MINUTES} min)"
+          fi
+
+      # Remembers which slots were already emailed, so you aren't alerted twice.
       - name: Restore memory of notified slots
         uses: actions/cache/restore@v4
         with:
@@ -46,10 +77,22 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          TEST_EMAIL: ${{ inputs.test_email }}
+          TEST_EMAIL: ${{ inputs.test_email && 'true' || 'false' }}
           SIMULATE: ${{ inputs.simulate && 'true' || 'false' }}
           SERVICE_EXCLUDE: ${{ inputs.include_visa && 'none' || 'visa' }}
-        run: python check_slots.py
+          STATE_FILE: state.json
+        run: |
+          if [ "${{ steps.mode.outputs.monitor }}" != "true" ]; then
+            python check_slots.py
+            exit 0
+          fi
+          end=$((SECONDS + MONITOR_MINUTES * 60))
+          while :; do
+            echo "--- $(TZ=America/Toronto date '+%Y-%m-%d %H:%M:%S') (Montreal)"
+            python check_slots.py || echo "::warning::Check failed, will retry next round"
+            [ "$SECONDS" -ge "$end" ] && break
+            sleep "$CHECK_EVERY_SECONDS"
+          done
 
       - name: Save memory of notified slots
         if: always()
@@ -57,3 +100,9 @@ jobs:
         with:
           path: state.json
           key: ${{ inputs.include_visa && 'visatest' || 'slot' }}-state-${{ github.run_id }}
+
+      - name: Start the next monitor run
+        if: ${{ !cancelled() && steps.mode.outputs.monitor == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run check.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"

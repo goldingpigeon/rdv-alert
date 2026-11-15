@@ -13,6 +13,8 @@ Settings come from environment variables:
   SERVICE_EXCLUDE  optional, comma-separated words; services whose title contains
                    any of them are skipped (default: "visa")
   STATE_FILE  optional, where already-notified slots are remembered
+  DATE_FROM   optional, first appointment date to alert on (YYYY-MM-DD)
+  DATE_TO     optional, last appointment date to alert on (YYYY-MM-DD, inclusive)
   DRY_RUN=1   print instead of sending email
   SIMULATE=true  send an alert with fake slots for the watched services
                  (tests the whole alert email; real state is not touched)
@@ -117,6 +119,11 @@ def fake_slots():
     return out
 
 
+def date_env(name):
+    v = os.environ.get(name, "").strip()
+    return date.fromisoformat(v) if v else None
+
+
 def word_list(name, default):
     return [w.strip().lower() for w in os.environ.get(name, default).split(",") if w.strip()]
 
@@ -141,6 +148,9 @@ def main():
     print("Watching:", ", ".join(s["title"] for s in wanted))
 
     simulate = os.environ.get("SIMULATE") == "true"
+    date_from, date_to = date_env("DATE_FROM"), date_env("DATE_TO")
+    if date_from or date_to:
+        print(f"Date window: {date_from or 'any'} to {date_to or 'any'}")
     state_file = os.environ.get("STATE_FILE", "state.json")
     try:
         seen = set() if simulate else set(json.load(open(state_file)))
@@ -152,6 +162,8 @@ def main():
     lines, now_open = [], set()
     for svc in wanted:
         slots = fake_slots() if simulate else open_slots(svc)
+        slots = [t for t in slots
+                 if (not date_from or t.date() >= date_from) and (not date_to or t.date() <= date_to)]
         title = svc["title"].lstrip("🟩🟦🟠 ").strip()
         print(f"{title}: {len(slots)} open slot(s)")
         keys = {f"{svc['serviceId']}|{t.isoformat()}" for t in slots}
@@ -165,6 +177,7 @@ def main():
     if lines:
         body = ("Des rendez-vous sont disponibles ! / Appointments are available!\n\n"
                 + "\n".join(lines)
+                + (f"\nPériode / Dates: {date_from or '…'} → {date_to or '…'}\n" if date_from or date_to else "")
                 + f"\nPage de réservation: {BOOKING_PAGE}\n"
                   "Heures: heure de Montréal (Eastern Time). Faites vite, ils partent rapidement.\n")
         subject = "🟢 RDV disponible – Passeport / Carte d'identité (Consulat Montréal)"
